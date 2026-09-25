@@ -1,1 +1,1 @@
-# osa-consult-bot
+small bot for osa consultations monitoring
