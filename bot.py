@@ -1,15 +1,13 @@
 import os
 import telebot
-import random
 import time
-import sqlite3
-import schedule
-import threading
 import json
+import requests
+import csv
+from io import StringIO
+from datetime import datetime, date, timedelta
 
-from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from telebot import apihelper
-
 
 API_TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = telebot.TeleBot(API_TOKEN)
@@ -18,42 +16,149 @@ bot = telebot.TeleBot(API_TOKEN)
 def start_handler(message):
     user_id = str(message.chat.id)
     username = message.from_user.username or "Unknown"
-    add_user(user_id, username)
-
     bot.reply_to(
         message,
-        f"meowmeowmeow")
-    send_daily_message(user_id)
+        f"привет! у меня все норм я работаю")
 
-# @bot.callback_query_handler(func=lambda call: call.data == "open_image")
-# def handle_open_image(call):
-#     user_id = str(call.message.chat.id)
-#     current_day = get_current_day()
+@bot.message_handler(commands=['consultations'])
+def consultations_handler(message):
+    result = get_next_consultation()
 
-#     user_images = get_user(user_id)
-#     if not user_images:
-#         bot.send_message(user_id, f"Похоже, что мы еще не знакомы. Отправь команду /start.")
-#         return
-    
-#     sent_images = eval(user_images)  # Retrieve sent images as a list
-#     remaining_days = current_day - len(sent_images)
+    date_str = result["date"].strftime("%d.%m")
 
-#     if current_day == 31:
-#         chosen_image = 'pictures/31.png'
-#         bot.send_photo(user_id, open(chosen_image, 'rb'))
-#         anekdot = anekdotes.get('31.png', "Анекдот не найден :()")
-#         bot.send_message(user_id, anekdot)
-#         sent_images.append(chosen_image)
-#         update_user_images(user_id, str(sent_images))
-#         remaining_days = current_day - len(sent_images)
-#         if user_id == '620069122':
-#             bot.send_message(user_id, "Саня, специально для тебя: чтоб хуй стоял и деньги были. с нг любимка!!!")
-#         if remaining_days > 0:
-#             bot.send_message(user_id, "Ты открыл не все доступные картинки. Нажми на кнопку 'открыть' еще раз!")
-        
+    if result["students"]:
+        students = "\n".join(
+            f"• {student}"
+            for student in result["students"]
+        )
+    else:
+        students = "Никто не записался."
+    text = (
+        f"Консультации {date_str}\n"
+        f"{result['module']} модуль, {result['week']} неделя\n\n"
+        f"{students}"
+    )
+    bot.reply_to(message, text)
 
+SPREADSHEET_ID = "1pFTeYFAHoLUXgOSDF4eA4ckmdhn62Y6MsnPlUX87r50"
+
+def scrape_data_from_spreadsheet():
+    url = (
+        f"https://docs.google.com/spreadsheets/d/"
+        f"{SPREADSHEET_ID}/export?format=csv"
+    )
+
+    response = requests.get(url)
+    response.raise_for_status()
+
+    text = response.content.decode("utf-8")
+    reader = csv.reader(StringIO(text))
+    rows = list(reader)
+    print(rows)
+    return rows
+
+CONSULTATION_COLUMNS = {
+    1: 2,  # вторник -> колонка C
+    4: 3,  # пятница -> колонка D
+}
+
+SCHEDULE = {
+    date(2026, 8, 31): (1, 1),
+    date(2026, 9, 7): (1, 2),
+    date(2026, 9, 14): (1, 3),
+    date(2026, 9, 21): (1, 4),
+
+    #неделя с 2026, 9, 28 - кт
+
+    date(2026, 10, 5): (2, 1),
+    date(2026, 10, 12): (2, 2),
+    date(2026, 10, 19): (2, 3),
+    date(2026, 10, 26): (2, 4),
+
+    #неделя с 2026, 11, 2 - кт
+
+    date(2026, 11, 9): (2, 1),
+    date(2026, 11, 16): (2, 2),
+    date(2026, 11, 23): (2, 3),
+    date(2026, 11, 30): (2, 4)
+}
+
+def get_next_consultation():
+    rows = scrape_data_from_spreadsheet()
+    now = datetime.now()
+    next_date = None
+
+    for days_ahead in range(8):
+        current_date = (now + timedelta(days=days_ahead)).date()
+
+        if current_date.weekday() in CONSULTATION_COLUMNS:
+            next_date = current_date
+            break
+    week_start = max(
+        start_date
+        for start_date in SCHEDULE
+        if start_date <= next_date
+    )
+
+    module, week = SCHEDULE[week_start]
+
+    # Какая колонка нужна:
+    # вторник = C = 2
+    # пятница = D = 3
+    column = CONSULTATION_COLUMNS[next_date.weekday()]
+
+    target_week = f"{week} неделя"
+    target_module = f"{module} модуль"
+
+    # Ищем начало нужной недели
+    start_row = None
+
+    for i, row in enumerate(rows):
+        if (
+            len(row) >= 2
+            and row[1].strip() == target_week
+            and (
+                row[0].strip() == target_module
+                or row[0].strip() == ""
+            )
+        ):
+            start_row = i
+            break
+
+    if start_row is None:
+        return {
+            "date": next_date,
+            "module": module,
+            "week": week,
+            "students": [],
+        }
+
+    students = []
+    if len(rows[start_row]) > column:
+        student = rows[start_row][column].strip()
+
+        if student:
+            students.append(student)
+
+    for row in rows[start_row + 1:]:
+        # следующая неделя
+        if len(row) >= 2 and row[1].strip().endswith("неделя"):
+            break
+        # следующий модуль
+        if len(row) >= 1 and row[0].strip().endswith("модуль"):
+            break
+        if len(row) > column:
+            student = row[column].strip()
+            if student:
+                students.append(student)
+
+    return {
+        "date": next_date,
+        "module": module,
+        "week": week,
+        "students": students,
+    }
 
 
 if __name__ == "__main__":
-    #threading.Thread(target=schedule_daily_messages, daemon=True).start()
     bot.polling(none_stop=True)
