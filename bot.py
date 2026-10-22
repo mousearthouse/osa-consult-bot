@@ -112,15 +112,19 @@ def get_next_consultation():
 
     # Ищем начало нужной недели
     start_row = None
+    current_module = ""
 
     for i, row in enumerate(rows):
+        module_cell = row[0].strip() if len(row) > 0 else ""
+        week_cell = row[1].strip() if len(row) > 1 else ""
+
+        # Запоминаем последний указанный модуль
+        if module_cell.endswith("модуль"):
+            current_module = module_cell
+
         if (
-            len(row) >= 2
-            and row[1].strip() == target_week
-            and (
-                row[0].strip() == target_module
-                or row[0].strip() == ""
-            )
+            current_module == target_module
+            and week_cell == target_week
         ):
             start_row = i
             break
